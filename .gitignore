@@ -1,0 +1,26 @@
+build/
+.cache/
+.DS_Store
+compile_commands.json
+
+# The ITCH sample files are three to five gigabytes each and are fetched with
+# scripts/fetch_itch.sh rather than committed.
+data/*.gz
+data/*.itch
+data/*.NASDAQ_ITCH50*
+
+# Benchmark and run outputs. The measured numbers that matter are written up in
+# results/RESULTS.md, which is committed, and everything else under results/ is
+# machine output from a particular run.
+results/**/*.json
+results/**/*.png
+results/**/*.csv
+results/**/*.txt
+results/wire/
+results/linux/
+results/idle/
+results/shootout/
+build-linux/
+build-san/
+build-tsan/
+build-*/
