@@ -1,0 +1,160 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Nothing here downloads the real ITCH file. A full trading day is three to
+# five gigabytes and CI has no business fetching it on every push. Everything
+# that needs a feed generates one from a seed, which is also why the synthetic
+# generator carries its own expected results.
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}, ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: macos-latest
+            compiler: apple-clang
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zlib
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        # -march=native is off in CI on purpose. The runner is not the machine
+        # any published number comes from, so tuning for it buys nothing and
+        # risks an illegal instruction on a different runner generation.
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O2"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 600
+
+      - name: Synthetic replay, end to end
+        run: |
+          # --out is the exact path written, so the .gz has to be in it. The
+          # generator does not append an extension, and an earlier version of
+          # this step asked for /tmp/ci.itch and then read /tmp/ci.itch.gz.
+          ./build/bin/make-synthetic-itch --out /tmp/ci.itch.gz \
+              --messages 500000 --symbols 100 --seed 20191230 --gzip
+          ./build/bin/tickerplant-replay --file /tmp/ci.itch.gz --digest --quiet \
+              --json /tmp/ci_run1.json
+          ./build/bin/tickerplant-replay --file /tmp/ci.itch.gz --digest --quiet \
+              --json /tmp/ci_run2.json
+
+      - name: Replay is deterministic
+        # The same file has to produce a bit identical book on every run. This
+        # is one of the three correctness oracles and it is cheap enough to
+        # gate every push on.
+        #
+        # Extracted with sed rather than a JSON parser, so the check has no
+        # dependency that could go missing. An earlier version shelled out to
+        # python3 and compared two empty strings when it was absent, which
+        # passed. A check that cannot fail is worse than no check, so the empty
+        # case is now an explicit failure.
+        run: |
+          digest() { sed -n 's/.*"book_digest": "\([0-9a-f]*\)".*/\1/p' "$1"; }
+          a=$(digest /tmp/ci_run1.json)
+          b=$(digest /tmp/ci_run2.json)
+          echo "run 1 $a"
+          echo "run 2 $b"
+          if [ -z "$a" ] || [ -z "$b" ]; then
+            echo "could not read a digest out of the run json, so this check proved nothing"
+            exit 1
+          fi
+          test "$a" = "$b"
+
+      - name: The two decoders agree
+        # tickerplant-replay --decoder both exits non-zero when the zero-copy
+        # and copying paths disagree on the book or on the volume.
+        run: ./build/bin/tickerplant-replay --file /tmp/ci.itch.gz --decoder both --quiet
+
+  sanitizers:
+    name: ${{ matrix.san }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        san: [address-undefined, thread]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      # AddressSanitizer does not run on the development machine, where its
+      # runtime hangs during its own initialisation on macOS 26.5. Linux is
+      # where the project actually gets that coverage, which is why this job
+      # exists rather than being a nicety.
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          case "${{ matrix.san }}" in
+            address-undefined) list="address,undefined" ;;
+            thread)            list="thread" ;;
+          esac
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DTICK_SANITIZE="$list" -DTICK_BUILD_BENCH=OFF \
+                -DCMAKE_CXX_FLAGS="-O1"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          # The seqlock reports a race on its value memcpy, which is correct
+          # and expected. See .tsan-suppressions, which explains why, and the
+          # header it points at. Nothing else is suppressed.
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/.tsan-suppressions
+        run: ctest --test-dir build --output-on-failure --timeout 1200
+
+      - name: Synthetic replay under the sanitizer
+        if: matrix.san == 'address-undefined'
+        # The decoder is parsing bytes that in production came off a network,
+        # so running a real message stream through it under ASan is the check
+        # that matters more than any unit test.
+        run: |
+          ./build/bin/make-synthetic-itch --out /tmp/san.itch --messages 200000 --symbols 50
+          ./build/bin/tickerplant-replay --file /tmp/san.itch --decoder both --quiet
+
+  format-and-warnings:
+    name: warnings are errors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Configure with -Werror
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O2 -Werror"
+      - name: Build
+        run: cmake --build build -j
