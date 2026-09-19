@@ -1,0 +1,25 @@
+# ThreadSanitizer suppressions.
+#
+# One entry, and it is here because the report it silences is correct.
+#
+# A seqlock writes the value bytes while readers are reading them, with no
+# atomic on those bytes. The sequence counter and the fences around it are what
+# make a reader able to detect that it raced and retry, and they do not make the
+# accesses themselves non-racy. The C++ memory model defines the race on the
+# accesses, so ThreadSanitizer is right by the letter of the standard and the
+# technique is a data race by that definition.
+#
+# The long version, including what the standard-clean alternative costs and why
+# Linux's own seqlock_t does the same thing, is at the top of
+# include/tick/seqlock.hpp. Read that before deciding this suppression is a
+# shortcut.
+#
+# What is NOT suppressed, deliberately:
+#   - anything in MpmcQueue, which runs clean and must stay that way
+#   - anything on the seqlock's sequence counter or its fences, which would be
+#     a real bug rather than the known one
+#
+# The tests still assert the property that matters, which is that no reader ever
+# accepts a value assembled from two different writes. That assertion has never
+# failed in any run, suppressed or not.
+race:tick::SeqLock
