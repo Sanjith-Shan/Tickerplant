@@ -117,7 +117,13 @@ TEST(UdpSocket, ReceiveBufferIsReportedBackRatherThanAssumed) {
     // Both kernels are free to give less than was asked for, and both do. The
     // contract is only that the request is accepted and the real value can be
     // read back, never that the two match.
-    s.set_rcvbuf(4 * 1024 * 1024);
+    //
+    // Ask for more than the socket already has rather than a fixed size. A
+    // fixed 4 MB request fails on a tuned box, where net.core.rmem_default is
+    // larger than the request and the kernel correctly shrinks the buffer to
+    // what was asked for. That is the setter working, so a test that reads it
+    // as a regression is testing the sysctl and not the code.
+    s.set_rcvbuf(before * 2);
     const int after = s.rcvbuf();
     EXPECT_GT(after, 0);
     EXPECT_GE(after, before);
