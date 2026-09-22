@@ -103,6 +103,35 @@ That is a floor rather than a result, because a container on a laptop has no
 everything else. [docs/LINUX_SETUP.md](docs/LINUX_SETUP.md) is the boot line and
 the run script for a box where the tail means something.
 
+### And then on a box where the tail does mean something
+
+An AMD EPYC 4484PX, rented bare metal, cores 2 and 3 isolated with `nohz_full`,
+SMT and boost off, governor `performance`. The receive path shootout, 5,000,000
+messages at 500,000 per second, receiver on an isolated core, best of three.
+Wire to book, nanoseconds.
+
+| Strategy | p50 | p99 | p99.9 |
+|---|---|---|---|
+| busy poll | **2,455** | **6,283** | **8,023** |
+| `recvmmsg` | 2,589 | 6,639 | 8,495 |
+| blocking `recv` | 3,457 | 7,611 | 9,727 |
+| `epoll` plus `recvmmsg` | 4,359 | 10,063 | 11,623 |
+| `io_uring` | 14,407 | 30,175 | 37,183 |
+
+**Every ordering the container found survived onto isolated hardware**, and the
+tail tightened by three times. `io_uring` is still last by a factor of five,
+which remains the least expected row in this repository.
+
+**Pinning to the isolated core did not beat leaving the thread alone.** On a
+machine where nothing else is running there is no migration to prevent, and the
+three conditions sit within 5 percent of each other with overlapping spreads. A
+first pass that ran one repetition per condition said isolation was six times
+worse, which was variance rather than a result, and
+[results/RESULTS.md](results/RESULTS.md) records how that was caught because it
+is the more useful half of the experiment.
+
+Still loopback. No interface, no driver, no switch.
+
 ## Quick start
 
 Requires CMake 3.20 or newer, a C++20 compiler, and zlib. GoogleTest, Google

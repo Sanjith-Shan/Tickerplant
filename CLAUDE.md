@@ -109,6 +109,15 @@ milliseconds of feed against a 50 millisecond recovery timeout, and it overflows
 and goes stale. This is measured in `results/RESULTS.md` and it is the best
 answer in the repository to "tell me about a bug you found".
 
+**One repetition is not a measurement, and this cost most of a rented box.**
+The first pinning table on the dedicated machine ran one run per condition and
+said an isolated core was six times worse at p99 than no pinning at all. Two
+plausible mechanisms were investigated and both were refuted before the actual
+cause turned up, which was that the run to run spread is larger than the gap
+between the conditions. Any comparison across conditions gets the same
+treatment the shootout gets, which is repetitions with the spread reported, and
+a single run difference is a hypothesis rather than a row in a table.
+
 **`hdr_record_corrected_value` costs one iteration per expected interval inside
 the sample.** The receiver does not use it, and the reason is in the sink in
 `tools/tickerplant_rx.cpp`. Do not put it back. Measuring against the
@@ -138,9 +147,10 @@ VM would look isolated and not be. That one needs real hardware.
 
 ## What is still open
 
-- Everything on a pinned, isolated core. `docs/LINUX_SETUP.md` is the recipe.
-  The receive path shootout across `recv`, `recvmmsg`, `epoll`, busy poll and
-  `io_uring` cannot be run on macOS at all.
+- The worst case with enough repetitions to be a distribution. Section 11 of
+  `results/RESULTS.md` has one unpinned run eighty times worse than its own
+  best and no pinned run near it, which is a lead and not a result. Separating
+  the conditions at the tail needs tens of runs each rather than three.
 - Two machines and a switch, so that "wire to book" means a wire.
 - The NanoExchange retrofit, applying this measurement harness to the sibling
   project so its numbers can be republished pinned.

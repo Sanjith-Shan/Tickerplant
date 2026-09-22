@@ -994,15 +994,151 @@ a coin flip.
 
 ---
 
+## 11. The dedicated box, pinned and isolated
+
+Added 2026-09-22. A rented bare metal machine, which is the first measurement in
+this file taken on hardware that nothing else was using. It closes the first
+item under "Not yet measured" and it revised a claim in section 10.
+
+Latitude.sh `f4.metal.small`, Chicago, billed hourly and destroyed after the
+run. `systemd-detect-virt` reports `none`, so this is metal and not a guest.
+
+```json
+{"cpu_model":"AMD EPYC 4484PX 12-Core Processor","os":"Ubuntu 24.04.5 LTS",
+ "kernel":"Linux 6.8.0-139-generic","compiler":"gcc 13.3.0","cores":12,
+ "isolated":true,"nohz_full":true,"governor":"performance","nic":"eno1 (ixgbe)",
+ "notes":"isolcpus=2,3 nohz_full=2,3"}
+```
+
+Boot line `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 amd_pstate=disable
+idle=poll`, verified after the reboot rather than assumed. SMT off, boost off
+through `cpufreq/boost`, governor `performance`, `irqbalance` stopped, receive
+buffers raised. `scripts/linux_box_setup.sh` applies all of it and
+`scripts/linux_box_run.sh` refuses to produce a number if
+`/sys/devices/system/cpu/isolated` comes back empty.
+
+### The oracles first
+
+```
+ctest --test-dir build-linux -j24
+./build-linux/bin/tickerplant-replay --file /tmp/linux_run.itch --decoder both
+```
+
+| | |
+|---|---|
+| Tests | **373 of 373 pass**, one skipped by design |
+| Two decoders | book digest `bbe02ebff48e8681` **matches**, volume digest `8766dd1d3c78f914` **matches** |
+| Decode throughput | 8.42 M msg/s zero copy against 6.55 M msg/s copying, **ratio 1.287x** |
+
+### Experiment one, the receive path shootout, on an isolated core
+
+```
+TICK_RX_CORE=3 TICK_PUB_CORE=6 ./scripts/receive_shootout.sh 5000000 500000 3
+```
+
+5,000,000 messages at 500,000 per second, one line, recovery off, receiver
+pinned to isolated core 3 and publisher to core 6, best of three runs. Wire to
+book, nanoseconds.
+
+| Strategy | p50 | p90 | p99 | p99.9 | max | Lost |
+|---|---|---|---|---|---|---|
+| blocking `recv` | 3,457 | 6,295 | 7,611 | 9,727 | 64,767 | 0 |
+| busy poll | **2,455** | **4,907** | **6,283** | **8,023** | 60,703 | 0 |
+| `recvmmsg` | 2,589 | 5,155 | 6,639 | 8,495 | **61,631** | 0 |
+| `epoll` plus `recvmmsg` | 4,359 | 8,159 | 10,063 | 11,623 | 62,655 | 0 |
+| `io_uring` | 14,407 | 26,063 | 30,175 | 37,183 | 113,727 | 0 |
+| `kqueue` | not available on Linux | | | | | |
+
+**Every ordering the container run found survived onto real isolated hardware.**
+Busy poll and `recvmmsg` tied at the front with busy poll ahead by 5 percent,
+`epoll` costs rather than helps at one socket, and `io_uring` is last by a
+factor of five. The container was measuring the right thing on the wrong
+machine, which is the useful thing to learn about the container.
+
+What changed is the magnitude. Busy poll p99 went from 10,959 ns in the
+container to **6,283 ns** here, and p99.9 from 24,463 ns to **8,023 ns**, so the
+tail tightened by three times while the median moved by half that. That gap is
+what an isolated core buys and it is a tail effect, which is what the theory
+predicts.
+
+The whole table was then re-run with the receiver on core 2 instead of core 3.
+Every strategy landed within 5 percent of its core 3 figure and no ordering
+changed, which is the cross-check that says the table is about the strategies
+rather than about one core.
+
+### Experiment two, and a result that was noise the first time
+
+Three conditions, both front running strategies, 5,000,000 messages at 500,000
+per second each. Wire to book p99 in nanoseconds, every repetition shown.
+
+| Condition | Strategy | p50 best | p99 best | p99 worst | p99 of each run |
+|---|---|---|---|---|---|
+| unpinned | busy poll | **1,222** | **3,017** | 3,201 | 3,017 3,039 3,201 |
+| pinned, shared core | busy poll | 1,356 | 3,123 | 3,313 | 3,123 3,313 3,211 |
+| pinned, isolated core | busy poll | 1,414 | 3,173 | **3,473** | 3,173 3,443 3,473 |
+| unpinned | `recvmmsg` | 1,352 | 3,285 | **252,287** | 3,285 252,287 3,327 |
+| pinned, shared core | `recvmmsg` | 1,498 | 3,347 | 3,647 | 3,371 3,347 3,647 |
+| pinned, isolated core | `recvmmsg` | 1,547 | 3,457 | 3,741 | 3,457 3,741 3,705 |
+
+**On the typical run, pinning bought nothing and isolation bought slightly less
+than nothing.** The three busy poll conditions sit inside 5 percent of each
+other and their spreads overlap, so they have not been separated. On a machine
+where nothing else is running, there is no migration for pinning to prevent,
+which is the same conclusion section 10 reached on the container and it now
+holds on metal.
+
+**The column that does separate them is the worst run.** One unpinned
+`recvmmsg` repetition came in at **252,287 ns**, eighty times its own best, and
+no pinned repetition anywhere in the table exceeded 3,741 ns. That is one
+outlier and it is not a distribution, so it is not a claim that pinning fixes
+the tail. It is the single piece of evidence here for the argument in section 10
+that pinning trades the scheduler's ability to help for its ability to hurt, and
+it points at the experiment worth running next, which is many more repetitions
+aimed at the worst case rather than the median.
+
+### The mistake this run made, recorded because it nearly went in the table
+
+The first pass ran **one repetition per condition** and produced a table saying
+the isolated core was six times worse at p99 than unpinned, 21,951 ns against
+3,363 ns. That is a striking result and it is entirely false.
+
+Two hypotheses were tested and both were wrong. That waking a blocked task on a
+`nohz_full` core costs the tick restart, refuted because busy poll, which never
+blocks, showed the same penalty. That the core carried an interrupt, refuted by
+moving `irq/25-AMD-Vi` away and measuring no change.
+
+What actually settled it was running the other isolated core. Core 3 was clean
+while core 2 was slow, and an isolated core that is slow while its neighbour
+under the identical boot line is not is not an isolation effect. Then the
+shootout, which takes the best of three, landed within 5 percent on both cores.
+**The single run numbers were variance, and the repetitions were the whole
+difference between a finding and an artifact.**
+
+The general form is worth keeping. A single run comparison across conditions
+whose true difference is smaller than the run to run spread will reliably
+produce an ordering, and that ordering is a coin flip. Section 10's tables are
+best of five for this reason and this experiment should have been from the
+start.
+
+### What this still is not
+
+Loopback. There is no interface, no driver and no switch in any of it, and
+`eno1` carried nothing but the SSH session. Two machines and a switch remains
+the open item, and until it is done these are decode and book path numbers
+measured on a quiet core rather than wire to book numbers.
+
+---
+
 ## Not yet measured
 
 These are open, and they are listed rather than filled in with something
 plausible.
 
-- **Every number on a pinned, isolated core.** The receive path shootout across
-  `recv`, `recvmmsg`, `epoll` plus `recvmmsg`, busy poll, and `io_uring` needs
-  Linux, and so does `SO_TIMESTAMPING` at nanosecond resolution, `isolcpus`, and
-  `nohz_full`. `docs/LINUX_SETUP.md` has the exact boot line and the run script.
+- **The worst case, with enough repetitions to be a distribution.** Section 11
+  has one unpinned repetition eighty times worse than its own best and no
+  pinned repetition anywhere near it. One outlier is a lead rather than a
+  result, and separating the conditions at the tail needs tens of runs per
+  condition rather than three.
 - **A real network.** Everything here is loopback. There is no interface, no
   driver, and no switch in any measurement in this file.
 
