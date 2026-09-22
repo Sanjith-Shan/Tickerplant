@@ -481,6 +481,16 @@ int main(int argc, char** argv) {
         std::printf("    decode to order  %s\n", run.decode_to_order.summary().c_str());
 
         std::printf("\n  heap allocations\n");
+        // A zero here means one of two completely different things, so say
+        // which. Either nothing allocated, or nothing was counting. Under
+        // ThreadSanitizer the global operators belong to the sanitizer and this
+        // binary has no counter at all, and printing three zeros in that build
+        // would be a measurement of nothing presented as a clean result.
+        if (!tick::alloc::counter_is_installed()) {
+            std::printf("    not measured in this build, because no counting\n"
+                        "    operators are linked into it. See alloc_counter.hpp.\n"
+                        "    ThreadSanitizer builds are the case that does this.\n");
+        } else {
         std::printf("    feed path        %llu   (decode and book apply)\n",
                     static_cast<unsigned long long>(run.feed_allocations));
         std::printf("    send path        %llu   (risk check and OUCH encode)\n",
@@ -493,6 +503,7 @@ int main(int argc, char** argv) {
                     "    That is a reasonable API for a matching engine and it would not be\n"
                     "    acceptable in a real order gateway, which is the kind of thing that\n"
                     "    only shows up once something counts the allocations.\n");
+        }
 
         std::printf("\n  No profit and loss is reported. The fill model ignores queue\n"
                     "  position, so it fills far more often than reality would, and any\n"
@@ -518,8 +529,16 @@ int main(int argc, char** argv) {
                 out << "  \"cancels_sent\": " << run.cancels_sent << ",\n";
                 out << "  \"fills\": " << run.fills << ",\n";
                 out << "  \"filled_shares\": " << run.filled_shares << ",\n";
-                out << "  \"feed_path_allocations\": " << run.feed_allocations << ",\n";
-                out << "  \"send_path_allocations\": " << run.send_allocations << ",\n";
+                // null rather than zero when nothing was counting, for the same
+                // reason box_label.sh prints unknown rather than a plausible
+                // default. A zero in this field would be read as a measurement.
+                if (tick::alloc::counter_is_installed()) {
+                    out << "  \"feed_path_allocations\": " << run.feed_allocations << ",\n";
+                    out << "  \"send_path_allocations\": " << run.send_allocations << ",\n";
+                } else {
+                    out << "  \"feed_path_allocations\": null,\n";
+                    out << "  \"send_path_allocations\": null,\n";
+                }
                 out << "  \"book_update\": " << run.book_update.to_json("book_update") << ",\n";
                 out << "  \"quote_decision\": " << run.quote_decision.to_json("quote_decision") << ",\n";
                 out << "  \"risk_check\": " << run.risk_check.to_json("risk_check") << ",\n";

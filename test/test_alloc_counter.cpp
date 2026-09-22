@@ -32,6 +32,23 @@ TICK_DEFINE_ALLOC_COUNTER();
 // Read this file top to bottom and the argument is complete. Read only the zero
 // assertions and you have learned nothing.
 
+// Under ThreadSanitizer the counting operators do not exist, because the TSan
+// runtime defines its own and two strong definitions do not link. See
+// alloc_counter.hpp. Every test in this file then skips, because a build that
+// cannot count must not assert about counts.
+//
+// The condition is the build and not counter_is_installed on purpose. Skipping
+// on the flag would mean that a normal build which forgot
+// TICK_DEFINE_ALLOC_COUNTER quietly skipped its way to green, which is the
+// failure this suite exists to make impossible.
+#if TICK_ALLOC_COUNTER_AVAILABLE
+#  define TICK_SKIP_WITHOUT_OPERATORS() ((void)0)
+#else
+#  define TICK_SKIP_WITHOUT_OPERATORS()                                       \
+      GTEST_SKIP() << "ThreadSanitizer owns the global operator new in this "  \
+                      "build, so there is no counter to test"
+#endif
+
 namespace {
 
 // A sink the optimiser cannot see through. Without it the compiler is permitted
@@ -49,6 +66,7 @@ void consume(const void* p, std::size_t n) noexcept {
 // ---------------------------------------------------------------------------
 
 TEST(AllocCounterSelfCheck, TheDefinitionsAreActuallyLinkedIntoThisBinary) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // Without this, a binary that forgot TICK_DEFINE_ALLOC_COUNTER would report
     // a permanent and permanently correct looking zero from every test below.
     ASSERT_TRUE(tick::alloc::counter_is_installed())
@@ -57,6 +75,7 @@ TEST(AllocCounterSelfCheck, TheDefinitionsAreActuallyLinkedIntoThisBinary) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesAPlainNew) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     int* p = new int(7);
     consume(p, sizeof(int));
@@ -67,6 +86,7 @@ TEST(AllocCounterSelfCheck, ItSeesAPlainNew) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesAnArrayNew) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     int* p = new int[64];
     consume(p, 64 * sizeof(int));
@@ -78,6 +98,7 @@ TEST(AllocCounterSelfCheck, ItSeesAnArrayNew) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesAnOverAlignedNew) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // This is the overload most easily forgotten and the one most likely to be
     // hit by this project, because a cache line aligned struct is the normal
     // shape of a low latency data structure and it routes to the aligned
@@ -96,6 +117,7 @@ TEST(AllocCounterSelfCheck, ItSeesAnOverAlignedNew) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesAnOverAlignedArrayNew) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     struct alignas(128) Wide { char pad[128]; };
 
     tick::AllocGuard g;
@@ -108,6 +130,7 @@ TEST(AllocCounterSelfCheck, ItSeesAnOverAlignedArrayNew) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesTheNothrowForms) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     int* a = new (std::nothrow) int(1);
     ASSERT_NE(a, nullptr);
@@ -125,6 +148,7 @@ TEST(AllocCounterSelfCheck, ItSeesTheNothrowForms) {
 }
 
 TEST(AllocCounterSelfCheck, ItSeesAllocationsMadeInsideTheStandardLibrary) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // The reason for replacing the global operators rather than writing a
     // custom allocator. A custom allocator only sees containers that were told
     // to use it, and the allocation this project is actually afraid of is the
@@ -146,6 +170,7 @@ TEST(AllocCounterSelfCheck, ItSeesAllocationsMadeInsideTheStandardLibrary) {
 }
 
 TEST(AllocCounterSelfCheck, ItCountsBytesAndNotJustCalls) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     char* p = new char[100000];
     consume(p, 100000);
@@ -159,6 +184,7 @@ TEST(AllocCounterSelfCheck, ItCountsBytesAndNotJustCalls) {
 // ---------------------------------------------------------------------------
 
 TEST(AllocGuardBehaviour, GuardsNest) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard outer;
     int* a = new int(1);
     consume(a, sizeof(int));
@@ -177,6 +203,7 @@ TEST(AllocGuardBehaviour, GuardsNest) {
 }
 
 TEST(AllocGuardBehaviour, RearmRestartsTheWindow) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     int* a = new int(1);
     consume(a, sizeof(int));
@@ -198,6 +225,7 @@ TEST(AllocGuardBehaviour, RearmRestartsTheWindow) {
 // ---------------------------------------------------------------------------
 
 TEST(AllocCounterZeroClaims, AnEmptyScopeAllocatesNothing) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     tick::AllocGuard g;
     EXPECT_EQ(g.allocations_in_scope(), 0u);
     EXPECT_EQ(g.deallocations_in_scope(), 0u);
@@ -205,6 +233,7 @@ TEST(AllocCounterZeroClaims, AnEmptyScopeAllocatesNothing) {
 }
 
 TEST(AllocCounterZeroClaims, ArithmeticAndStackWorkAllocateNothing) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // The shape of an assertion a hot path test makes, on work that obviously
     // cannot allocate, so that the pattern itself is verified here rather than
     // for the first time in a benchmark.
@@ -221,6 +250,7 @@ TEST(AllocCounterZeroClaims, ArithmeticAndStackWorkAllocateNothing) {
 }
 
 TEST(AllocCounterZeroClaims, APreReservedVectorDoesNotAllocateWhileFilling) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // The realistic version. The reserve is outside the guard, which is exactly
     // how a feed handler is supposed to be arranged, and the fill inside it
     // must be silent. If reserve were wrong or the growth policy surprised us,
@@ -235,6 +265,7 @@ TEST(AllocCounterZeroClaims, APreReservedVectorDoesNotAllocateWhileFilling) {
 }
 
 TEST(AllocCounterZeroClaims, ExceedingAReserveDoesAllocateAndIsCaught) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     // The negative control for the test above. If pushing past the reserve did
     // not register, the previous test would be passing for the wrong reason.
     std::vector<std::uint64_t> v;
@@ -253,6 +284,7 @@ TEST(AllocCounterZeroClaims, ExceedingAReserveDoesAllocateAndIsCaught) {
 // ---------------------------------------------------------------------------
 
 TEST(AllocCounterTotals, TotalsAreProcessWideAndOnlyGoUp) {
+    TICK_SKIP_WITHOUT_OPERATORS();
     const uint64_t before = tick::alloc::allocations();
     int* p = new int(1);
     consume(p, sizeof(int));

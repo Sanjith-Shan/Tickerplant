@@ -152,13 +152,37 @@ TEST(SeqLock, CopiesEveryByteOfAWidePayload) {
     }
 }
 
+// ThreadSanitizer instruments every load and store in this file, and the two
+// contention tests below are deliberately the densest code in the suite. A
+// million writes against six spinning readers does not finish inside any
+// sensible ctest timeout once that instrumentation is on, so the counts come
+// down under the sanitizer.
+//
+// Nothing is lost by that. TSan is looking for a missing fence, which is a
+// property of the code rather than of how many times it runs, and its own
+// slowdown widens the window between the sequence counter and the payload so
+// the interleavings are denser per iteration rather than sparser. The full
+// counts still run in every build that is not sanitized, which is where the
+// rare interleaving argument in the comment at the top of this file applies.
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define TICK_TEST_UNDER_TSAN 1
+#  endif
+#endif
+#if !defined(TICK_TEST_UNDER_TSAN) && defined(__SANITIZE_THREAD__)
+#  define TICK_TEST_UNDER_TSAN 1
+#endif
+#if !defined(TICK_TEST_UNDER_TSAN)
+#  define TICK_TEST_UNDER_TSAN 0
+#endif
+
 TEST(SeqLock, ReadersNeverSeeAMixtureOfTwoWrites) {
     // One writer, six readers, which is the real shape. The writer runs flat
     // out so the readers race it constantly rather than occasionally, since a
     // seqlock whose fences are wrong is still almost always right and only a
     // very high write rate turns "almost" into a failure the test can catch.
     constexpr int      kReaders    = 6;
-    constexpr uint64_t kWrites     = 1'000'000;
+    constexpr uint64_t kWrites     = TICK_TEST_UNDER_TSAN ? 20'000 : 1'000'000;
 
     SeqLock<TopOfBook> sl(TopOfBook::make(0));
     std::atomic<bool>  writing{true};
@@ -234,7 +258,7 @@ TEST(SeqLock, WriterIsNeverBlockedByReaders) {
     // would be a flaky test rather than a measurement. The measurement lives in
     // bench/bench_concurrency.cpp where it belongs.
     constexpr int      kReaders = 4;
-    constexpr uint64_t kWrites  = 200'000;
+    constexpr uint64_t kWrites  = TICK_TEST_UNDER_TSAN ? 20'000 : 200'000;
 
     SeqLock<TopOfBook>    sl(TopOfBook::make(0));
     std::atomic<bool>     stop{false};

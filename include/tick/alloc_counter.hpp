@@ -73,6 +73,32 @@
 // macro below exists so exactly one translation unit defines the operators,
 // which is what makes that choice per binary.
 
+// THE ONE BUILD WHERE THIS CANNOT BE DONE AT ALL
+//
+// ThreadSanitizer's runtime defines the global operator new and delete itself,
+// and defines them strongly, so a definition here is a duplicate symbol at link
+// time rather than a replacement and the binary does not link. AddressSanitizer
+// defines the same operators weakly and yields to a user definition, which is
+// why only this one sanitizer needs a carve out.
+//
+// Under ThreadSanitizer the macro below therefore expands to nothing,
+// counter_is_installed stays false, and every caller is expected to ask before
+// reporting a count. That is the honest outcome and it is the case this header
+// already built a guard rail for. What must not happen is a build that reports
+// zero allocations because nothing was counting, which is the exact piece of
+// theatre the comment above is about.
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define TICK_ALLOC_COUNTER_AVAILABLE 0
+#  endif
+#endif
+#if !defined(TICK_ALLOC_COUNTER_AVAILABLE) && defined(__SANITIZE_THREAD__)
+#  define TICK_ALLOC_COUNTER_AVAILABLE 0
+#endif
+#if !defined(TICK_ALLOC_COUNTER_AVAILABLE)
+#  define TICK_ALLOC_COUNTER_AVAILABLE 1
+#endif
+
 namespace tick {
 namespace alloc {
 
@@ -181,6 +207,15 @@ private:
 // is unused, which for a counting allocator means the instrument disagrees with
 // the code depending on optimisation level. The test compiles with that
 // possibility in mind and uses the allocated memory so the pair cannot vanish.
+
+#if !TICK_ALLOC_COUNTER_AVAILABLE
+
+// ThreadSanitizer owns the global operators in this build, so define nothing and
+// leave counter_is_installed false. See the explanation above.
+#define TICK_DEFINE_ALLOC_COUNTER()                                             \
+    static_assert(true, "TICK_DEFINE_ALLOC_COUNTER expects a trailing semicolon")
+
+#else
 
 #define TICK_DEFINE_ALLOC_COUNTER()                                             \
     namespace tick { namespace alloc { namespace detail {                       \
@@ -299,3 +334,5 @@ private:
         ::tick::alloc::detail::tick_free(p);                                    \
     }                                                                           \
     static_assert(true, "TICK_DEFINE_ALLOC_COUNTER expects a trailing semicolon")
+
+#endif // TICK_ALLOC_COUNTER_AVAILABLE
