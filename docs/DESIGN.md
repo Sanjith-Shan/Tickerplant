@@ -830,3 +830,38 @@ an interviewer should be told rather than the last things they find.
   head of the file would have measured pre-open quoting in a handful of ADRs on
   a live set small enough to sit in cache, which is a real file and a fake
   workload.
+
+---
+
+## 12. Notes for anyone building on this
+
+Three things that are not defects and will still cost an afternoon if nobody
+says them out loud.
+
+**The order pool is a compile-time capacity.** `TICK_ORDER_POOL_CAPACITY`
+defaults to four million, against a measured peak of 1,924,078 resting orders on
+2019-12-30. That headroom is comfortable for this session and is not a
+guarantee for another one. A different trading day, and particularly a more
+active one, should have the peak that `tickerplant-replay` reports checked
+against the capacity before the run is trusted.
+
+**`SymbolTable::find` is a linear scan over the whole 16 bit locate space and is
+meant to be called once at startup.** Calling it per message took a 300,000
+message replay from 0.25 seconds to 25 seconds, a hundredfold, which was a real
+defect in `tickerplant_trade.cpp` and is fixed. The lookup that belongs on the
+hot path is the locate itself, which is already an index.
+
+**`hdr_record_corrected_value` is deliberately not used.** It costs one
+iteration per expected interval inside the sample, and measuring against the
+publisher's schedule already removes coordinated omission. Doing both double
+counts the correction and creates a feedback loop that was plainly visible in
+the numbers. The reasoning sits next to the sink in `tools/tickerplant_rx.cpp`.
+
+**Building on Linux from a Mac needs one flag.** A container gives a real kernel,
+so `recvmmsg`, `epoll`, `io_uring`, `sched_setaffinity` and the sanitizers all
+work in one. `io_uring_queue_init` fails without
+`--security-opt seccomp=unconfined`, because Docker's default seccomp profile
+blocks the io_uring syscalls. What a container still cannot give is `isolcpus`,
+since the guest's isolated core is a vCPU thread the host schedules, so an
+isolated run inside a nested VM looks isolated and is not. That needs the real
+box in `docs/LINUX_SETUP.md`.
